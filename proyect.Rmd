@@ -1,0 +1,689 @@
+---
+title: "proyect"
+author: "Luis Oced"
+date: "2025-10-22"
+output: html_document
+---
+
+```{r}
+library(ggplot2)
+library(maps)
+library(dplyr)
+library(tidyverse)
+library(dplyr)
+library(readr)
+library(sf)
+library(readr)
+library(spgwr)
+library(leaflet)
+library(osmdata)
+library(readxl)
+library(openxlsx)
+library(RColorBrewer)
+library(scales) # Necesario para formatear números grandes
+library(htmltools)
+
+
+```
+
+
+
+```{r}
+proyect <- read.csv(
+  "data/0alq_zp_2024_completo.csv",
+  sep = "|",
+  header = TRUE,
+  fill = TRUE,
+  quote = "\""
+)
+
+
+```
+
+```{r}
+ncol(proyect)
+colnames(proyect)
+
+```
+
+
+
+```{r}
+head(proyect, 15)
+
+
+```
+
+
+
+
+```{r}
+
+ubicacion <- "Cordoba, Argentina"
+bbox <- getbb(ubicacion)
+
+# Descargar todas las entidades educativas (escuelas, universidades, colegios)
+educativas <- opq(bbox = bbox) %>%
+  add_osm_feature(key = "amenity", value = c("school", "university", "college")) %>%
+  osmdata_sf()
+# Área de búsqueda
+
+
+# Combinar puntos, polígonos y multipolígonos
+educativas_sf <- bind_rows(
+  educativas$osm_points %>% select(any_of(c("osm_id","name","amenity","addr:street","addr:housenumber","addr:city","geometry"))),
+  educativas$osm_polygons %>% select(any_of(c("osm_id","name","amenity","addr:street","addr:housenumber","addr:city","geometry"))),
+  educativas$osm_multipolygons %>% select(any_of(c("osm_id","name","amenity","addr:street","addr:housenumber","addr:city","geometry")))
+)
+
+# Eliminar duplicados
+educativas_sf <- educativas_sf %>% distinct(osm_id, .keep_all = TRUE)
+
+# Filtrar universidades
+universidades_sf <- educativas_sf %>% filter(amenity == "university")
+
+# Mostrar las universidades encontradas (debería incluir la UNC)
+universidades_sf %>% filter(grepl("Cordoba", name, ignore.case = TRUE))
+
+
+
+
+```
+
+
+```{r}
+
+universidades_centroides <- universidades_sf %>%
+  st_centroid(of_largest_polygon = TRUE)  # maneja multipolígonos correctamente
+
+
+leaflet(universidades_centroides) %>%
+  addProviderTiles(providers$CartoDB.Positron) %>%
+  addCircleMarkers(
+    lng = ~st_coordinates(geometry)[,1],
+    lat = ~st_coordinates(geometry)[,2],
+    label = ~name,
+    color = "blue",
+    radius = 5
+  ) %>%
+  setView(lng = -64.1888, lat = -31.4201, zoom = 12)  # centro de Córdoba
+
+
+```
+
+# guardar
+
+```{r}
+
+# Suponiendo que ya tienes educativas_sf con polígonos o puntos
+educativas_sf <- educativas$osm_polygons  # o $osm_points según lo que tengas
+
+# Convertir a centroides si son polígonos
+educativas_centros <- st_centroid(educativas_sf)
+
+# Extraer coordenadas a columnas
+educativas_csv <- cbind(
+  st_drop_geometry(educativas_centros),
+  st_coordinates(educativas_centros)
+)
+
+# Guardar como CSV
+write.csv(educativas_csv, "universidades.csv", row.names = FALSE, fileEncoding = "UTF-8")
+
+
+
+```
+
+
+
+# descarga Hospitales
+
+```{r}
+
+
+# Definir el área de búsqueda
+ubicacion <- "Provincia de Cordoba, Argentina"
+bbox <- getbb(ubicacion)
+
+# Ejemplo: infraestructura de salud
+salud <- opq(bbox = bbox) %>%
+  add_osm_feature(key = "amenity", 
+                  value = c("hospital", "clinic", "doctors", "pharmacy")) %>%
+  osmdata_sf()
+
+# Combinar puntos y polígonos
+salud_sf <- bind_rows(
+  salud$osm_points %>% select(any_of(c("osm_id","name","amenity","addr:city","geometry"))),
+  salud$osm_polygons %>% select(any_of(c("osm_id","name","amenity","addr:city","geometry")))
+)
+
+# Quitar duplicados
+salud_sf <- salud_sf %>% distinct(osm_id, .keep_all = TRUE)
+
+# Convertir a centroides si es necesario
+salud_sf <- salud_sf %>% mutate(geometry = st_centroid(geometry))
+
+
+
+```
+
+
+
+# ########################
+
+```{r}
+# Exportar a CSV
+salud_csv <- cbind(st_drop_geometry(salud_sf), st_coordinates(salud_sf))
+write_csv(salud_csv, "salud.csv")
+
+```
+
+# descarga bares
+
+```{r}
+# ==========================================
+# Comercios y Bares - Córdoba Capital
+# ==========================================
+
+
+# Definir área de búsqueda
+ubicacion <- "Cordoba, Argentina"
+bbox <- getbb(ubicacion)
+
+# Descargar datos de OSM
+comercios <- opq(bbox = bbox) %>%
+  add_osm_feature(key = "shop", 
+                  value = c("supermarket", "mall", "department_store")) %>%
+  osmdata_sf()
+
+bares <- opq(bbox = bbox) %>%
+  add_osm_feature(key = "amenity", 
+                  value = c("bar", "pub", "cafe", "restaurant")) %>%
+  osmdata_sf()
+
+# Combinar puntos y polígonos de comercios
+comercios_sf <- bind_rows(
+  comercios$osm_points %>% select(any_of(c("osm_id","name","shop","geometry"))),
+  comercios$osm_polygons %>% select(any_of(c("osm_id","name","shop","geometry")))
+)
+
+# Combinar puntos y polígonos de bares
+bares_sf <- bind_rows(
+  bares$osm_points %>% select(any_of(c("osm_id","name","amenity","geometry"))),
+  bares$osm_polygons %>% select(any_of(c("osm_id","name","amenity","geometry")))
+)
+
+# Unir todo en una sola capa
+comercio_bares_sf <- bind_rows(
+  comercios_sf %>% rename(tipo = shop),
+  bares_sf %>% rename(tipo = amenity)
+)
+
+# Quitar duplicados
+comercio_bares_sf <- comercio_bares_sf %>%
+  distinct(osm_id, .keep_all = TRUE)
+
+# Convertir polígonos a centroides (si es necesario)
+comercio_bares_sf <- comercio_bares_sf %>%
+  mutate(geometry = st_centroid(geometry))
+
+# Exportar a CSV
+comercio_bares_csv <- cbind(
+  st_drop_geometry(comercio_bares_sf),
+  st_coordinates(comercio_bares_sf)
+)
+
+write.csv(comercio_bares_csv, "comercio_bares.csv", row.names = FALSE)
+
+
+# Mapa rápido
+library(leaflet)
+leaflet(comercio_bares_sf) %>%
+  addProviderTiles(providers$CartoDB.Positron) %>%
+  addCircleMarkers(
+    color = ~ifelse(tipo %in% c("mall", "department_store"), "red",
+             ifelse(tipo == "supermarket", "blue", "orange")),
+    radius = 5,
+    label = ~name,
+    popup = ~paste("<b>", name, "</b><br>", tipo)
+  )
+
+
+```
+
+# Filtrar solo los malls o shoppings
+
+```{r}
+# Filtrar solo los malls o shoppings
+shoppings <- comercio_bares_sf %>%
+  filter(tipo %in% c("mall", "department_store")) %>%
+  select(name, tipo)
+
+# Ver los nombres
+print(shoppings)
+
+
+```
+
+
+```{r}
+# Buscar coincidencias con nombres conocidos
+shoppings_conocidos <- comercio_bares_sf %>%
+  filter(grepl("Patio Olmos|NuevoCentro|Dinosaurio|Córdoba Shopping|Jockey|Libertad", 
+               name, ignore.case = TRUE)) %>%
+  select(name, tipo)
+
+print(shoppings_conocidos)
+
+
+
+```
+
+
+# descarga transporte
+
+```{r}
+
+# ==========================================
+# Transporte público - Córdoba Capital
+# ==========================================
+
+
+# Definir área de búsqueda
+ubicacion <- "Cordoba, Argentina"
+bbox <- getbb(ubicacion)
+
+# --- Paradas de colectivo ---
+paradas <- opq(bbox = bbox) %>%
+  add_osm_feature(key = "highway", value = "bus_stop") %>%
+  osmdata_sf()
+
+# --- Estaciones de transporte (bus / tren / trolebús) ---
+estaciones <- opq(bbox = bbox) %>%
+  add_osm_feature(key = "public_transport", 
+                  value = c("station", "stop_position", "stop_area")) %>%
+  osmdata_sf()
+
+# --- Terminales o estaciones principales ---
+terminales <- opq(bbox = bbox) %>%
+  add_osm_feature(key = "amenity", 
+                  value = c("bus_station", "ferry_terminal")) %>%
+  osmdata_sf()
+
+# --- Combinar puntos y polígonos ---
+paradas_sf <- bind_rows(
+  paradas$osm_points %>% select(any_of(c("osm_id","name","highway","geometry"))),
+  paradas$osm_polygons %>% select(any_of(c("osm_id","name","highway","geometry")))
+)
+
+estaciones_sf <- bind_rows(
+  estaciones$osm_points %>% select(any_of(c("osm_id","name","public_transport","geometry"))),
+  estaciones$osm_polygons %>% select(any_of(c("osm_id","name","public_transport","geometry")))
+)
+
+terminales_sf <- bind_rows(
+  terminales$osm_points %>% select(any_of(c("osm_id","name","amenity","geometry"))),
+  terminales$osm_polygons %>% select(any_of(c("osm_id","name","amenity","geometry")))
+)
+
+# --- Unir todas las capas ---
+transporte_sf <- bind_rows(
+  paradas_sf %>% rename(tipo = highway),
+  estaciones_sf %>% rename(tipo = public_transport),
+  terminales_sf %>% rename(tipo = amenity)
+)
+
+# --- Quitar duplicados ---
+transporte_sf <- transporte_sf %>% distinct(osm_id, .keep_all = TRUE)
+
+# --- Convertir polígonos a centroides (si es necesario) ---
+transporte_sf <- transporte_sf %>%
+  mutate(geometry = st_centroid(geometry))
+
+ #--- Exportar a CSV ---
+transporte_csv <- cbind(
+  st_drop_geometry(transporte_sf),
+  st_coordinates(transporte_sf)
+)
+write.csv(transporte_csv, "transporte.csv", row.names = FALSE)
+
+# --- Guardar shapefile ---
+#st_write(transporte_sf, "transporte.shp", delete_layer = TRUE)
+
+
+
+```
+
+```{r}
+transporte_sf %>% filter(!is.na(name))
+
+
+```
+
+```{r}
+library(leaflet)
+
+leaflet(transporte_sf) %>%
+  addProviderTiles(providers$CartoDB.Positron) %>%
+  
+  # Marcadores de colores según tipo
+  addCircleMarkers(
+    color = ~ifelse(tipo %in% c("bus_stop", "bus_station"), "red",
+             ifelse(tipo == "station", "blue", "orange")),
+    radius = 5,
+    stroke = FALSE,
+    fillOpacity = 0.8,
+    label = ~ifelse(is.na(name), tipo, name),
+    popup = ~paste0("<b>", ifelse(is.na(name), "(Sin nombre)", name), "</b><br>Tipo: ", tipo)
+  ) %>%
+  
+  # Añadir leyenda
+  addLegend(
+    position = "bottomright",
+    colors = c("red", "blue", "orange"),
+    labels = c("Paradas / Terminales de colectivo", "Estaciones grandes", "Otros tipos"),
+    title = "Infraestructura de transporte",
+    opacity = 1
+  )
+
+
+```
+
+
+# decarga callejero
+
+```{r}
+# ==========================================
+# Vías principales / Avenidas / Autopistas
+# ==========================================
+
+
+
+# Definir área de búsqueda
+ubicacion <- "Cordoba, Argentina"
+bbox <- getbb(ubicacion)
+
+# Descargar red vial principal
+vias <- opq(bbox = bbox) %>%
+  add_osm_feature(key = "highway",
+                  value = c("motorway", "trunk", "primary", "secondary")) %>%
+  osmdata_sf()
+
+# Combinar líneas y polígonos (aunque la mayoría son líneas)
+vias_sf <- bind_rows(
+  vias$osm_lines %>% select(any_of(c("osm_id","name","highway","geometry"))),
+  vias$osm_polygons %>% select(any_of(c("osm_id","name","highway","geometry")))
+)
+
+# Quitar duplicados
+vias_sf <- vias_sf %>% distinct(osm_id, .keep_all = TRUE)
+
+# Exportar a CSV (si querés guardar coordenadas)
+vias_csv <- cbind(
+  st_drop_geometry(vias_sf),
+  st_coordinates(st_centroid(vias_sf))
+)
+write.csv(vias_csv, "vias_principales.csv", row.names = FALSE)
+
+
+
+# --- Mapa rápido ---
+leaflet(vias_sf) %>%
+  addProviderTiles(providers$CartoDB.Positron) %>%
+  addPolylines(
+    color = ~case_when(
+      highway == "motorway" ~ "red",
+      highway == "trunk" ~ "orange",
+      highway == "primary" ~ "blue",
+      highway == "secondary" ~ "green",
+      TRUE ~ "gray"
+    ),
+    weight = 3,
+    label = ~paste0(name, " (", highway, ")")
+  ) %>%
+  addLegend(
+    position = "bottomright",
+    colors = c("red", "orange", "blue", "green"),
+    labels = c("Autopistas", "Troncales", "Avenidas principales", "Avenidas secundarias"),
+    title = "Red vial principal"
+  )
+
+
+
+```
+
+
+```{r}
+# ======================================================
+# Descarga y carga límites departamentales de Córdoba
+# ======================================================
+
+
+# --- URL del GeoJSON de límites departamentales de Córdoba ---
+url_geojson <- "https://raw.githubusercontent.com/mgaitan/departamentos_argentina/master/departamentos-cordoba.json"
+
+dest_file <- "departamentos_cba.geojson"
+
+if (!file.exists(dest_file)) {
+  download.file(url_geojson, destfile = dest_file, mode = "wb")
+  message("GeoJSON descargado correctamente: ", dest_file)
+} else {
+  message("️ GeoJSON ya existe localmente.")
+}
+
+# --- Leer el archivo GeoJSON ---
+departamentos <- st_read(dest_file)
+
+# --- Mostrar algunos datos para comprobar ---
+print(head(departamentos))
+print(colnames(departamentos))
+
+# Ahora ya tenés los límites de los departamentos de Córdoba y podés unirlos con tus datos de población/densidad.
+
+
+```
+
+
+
+
+
+```{r}
+
+# Carga el CSV (usa la función que crees que es la correcta, read_csv o read.csv2)
+df_censo_atributos <- read_csv("radios2022_v1.0.csv") 
+
+# ¡EJECUTA ESTO E INFORMA LOS NOMBRES QUE APARECEN!
+names(df_censo_atributos)
+```
+
+```{r}
+# Este comando lista todos los nombres de tu tabla de atributos
+names(df_censo_atributos)
+
+```
+
+```{r}
+
+
+# --- CARGA DEL CSV DE ATRIBUTOS (Parte I) ---
+# Asegúrate de que esta línea apunte al CSV que contiene las variables estadísticas
+personas <- read_csv("Indicadores de personas. Radios, 2010.csv") 
+
+```
+
+
+```{r}
+
+
+# --- PARTE I: LIMPIEZA DE ATRIBUTOS ESTADÍSTICOS (FINAL Y FUNCIONAL) ---
+# Usamos el objeto 'personas' (datos a nivel de Radio).
+
+df_atributos_limpio <- personas %>%
+  
+  # Paso 1: Renombrar Geografía
+  rename(
+    COD_RAD_CENSAL_RAW = `Código de radio.` # Usamos el nombre exacto con el punto
+  ) %>%
+  
+  # Paso 2: SELECCIONAR Y RENOMBRAR DATOS ESTADÍSTICOS (Nombres Exactos Aplicados)
+  select(
+    COD_RAD_CENSAL_RAW,
+    POB_TOTAL = `Población total (en hogares familiares).`, 
+    POB_JVEN = `Población de 18 a 29 años.`
+    # POB_COB_SALUD ha sido omitido ya que la columna no existe en names(personas)
+  ) %>%
+  
+  # Paso 3: Creación de la CLAVE ÚNICA (COD_RAD_CENSAL) - Nivel Radio
+  mutate(
+    # La clave de 9 dígitos se extrae y paddea de la columna 'Código de radio.'
+    COD_RAD_CENSAL = str_pad(as.character(COD_RAD_CENSAL_RAW), width = 9, side = "left", pad = "0"),
+    COD_PROV = str_sub(COD_RAD_CENSAL, 1, 2), # "14"
+    COD_DPTO = str_sub(COD_RAD_CENSAL, 3, 5)  # "014"
+  ) %>%
+  
+  # Filtrar solo Córdoba Capital (14014)
+  filter(COD_PROV == "14" & COD_DPTO == "014")
+
+# --- 3. Cálculo de Indicadores (Ratios) ---
+# Ahora solo calculamos el Ratio de Población Joven.
+df_indicadores_listo <- df_atributos_limpio %>%
+  mutate_at(vars(starts_with("POB_")), as.numeric) %>% 
+  mutate(
+    RATIO_POB_JOVEN = POB_JVEN / POB_TOTAL
+    # RATIO_NSE_ALTO omitido
+  ) %>%
+  mutate_if(is.numeric, ~replace(., is.na(.) | is.infinite(.), 0))
+
+# --- PARTE II: JOIN GEOGRÁFICO Y DENSIDAD (Nivel Radio) ---
+
+# Carga de Geometría (Shapefile)
+sf_cordoba_radios <- st_read("radios_2022/radios2022_v1.0.shp")
+
+sf_cordoba_capital_geo <- sf_cordoba_radios %>%
+    mutate(
+        # Creamos la clave de 9 dígitos del shapefile para el join
+        COD_PROV = str_pad(as.character(PROV), width = 2, side = "left", pad = "0"), 
+        COD_DPTO = str_pad(as.character(DEPTO), width = 3, side = "left", pad = "0"),
+        FRACCION = str_pad(as.character(FRAC), width = 2, side = "left", pad = "0"), 
+        RADIO = str_pad(as.character(RADIO), width = 2, side = "left", pad = "0"),  
+        COD_RAD_CENSAL = paste0(COD_PROV, COD_DPTO, FRACCION, RADIO)
+    ) %>%
+    filter(COD_PROV == "14" & COD_DPTO == "014") # Filtramos solo Córdoba Capital
+
+# Unión de datos (Join 1:1, cada radio con su estadística)
+sf_final_geoestadistico <- sf_cordoba_capital_geo %>%
+    left_join(df_indicadores_listo, by = "COD_RAD_CENSAL") %>%
+    filter(!is.na(POB_TOTAL) & POB_TOTAL > 0)
+
+# Cálculo de Densidad
+sf_final_mapa_listo <- sf_final_geoestadistico %>%
+    mutate(AREA_KM2 = as.numeric(st_area(geometry)) / 1000000) %>%
+    mutate(DENSIDAD = POB_TOTAL / AREA_KM2)
+
+```
+
+
+```{r}
+
+
+ggplot(sf_final_mapa_listo) +
+  geom_sf(aes(fill = DENSIDAD), color = NA) +
+  scale_fill_viridis_c(option = "magma", labels = scales::comma, trans = "log10") + # Usamos log10 para mejorar el contraste de zonas de alta densidad
+  labs(
+    title = "Densidad de Población por Radio Censal", 
+    subtitle = "Departamento Capital (Córdoba)",
+    fill = "Densidad (Hab/Km²)"
+  ) +
+  theme_minimal()
+
+```
+
+
+```{r}
+# Muestra las primeras filas y las columnas
+head(sf_final_mapa_listo) 
+# Muestra el número de filas (radios censales en Córdoba Capital)
+nrow(sf_final_mapa_listo)
+
+```
+
+
+# leaflet por radio
+
+```{r}
+
+
+# 1. Definir la paleta de colores
+# Creamos una paleta para la densidad. 'magma' fue efectiva en ggplot.
+# Usamos 'log10' para una mejor distribución visual de los colores.
+bins <- 10^c(0, 1, 2, 3, 4, 5, 6, 7) # Bins en escala logarítmica (1, 10, 100, 1000, etc.)
+pal <- colorBin("magma", domain = sf_final_mapa_listo$DENSIDAD, bins = bins)
+
+# 2. Definir el contenido del pop-up (la información que aparece al hacer clic)
+sf_final_mapa_listo <- sf_final_mapa_listo %>%
+  mutate(
+    popup_content = paste0(
+      "<strong>Radio Censal: </strong>", COD_RAD_CENSAL,
+      "<br><strong>Población Total: </strong>", scales::comma(POB_TOTAL, accuracy = 1),
+      "<br><strong>Densidad (Hab/Km²): </strong>", scales::comma(DENSIDAD, accuracy = 0.1),
+      "<br><strong>Ratio Joven (18-29): </strong>", scales::percent(RATIO_POB_JOVEN, accuracy = 0.1)
+    )
+  )
+
+# 3. Crear el Mapa Leaflet
+mapa_leaflet <- leaflet(sf_final_mapa_listo) %>%
+  # Capa base (OpenStreetMap)
+  addTiles() %>%
+  
+  # Capa de polígonos (Radios Censales)
+  addPolygons(
+    fillColor = ~pal(DENSIDAD), # Colorea según la densidad
+    weight = 1,                 # Grosor de la línea
+    opacity = 1,
+    color = "white",
+    dashArray = "3",
+    fillOpacity = 0.7,
+    highlightOptions = highlightOptions(
+      weight = 3,
+      color = "#666",
+      dashArray = "",
+      fillOpacity = 0.9,
+      bringToFront = TRUE),
+    label = ~lapply(popup_content, htmltools::HTML), # Etiqueta al pasar el ratón
+    popup = ~lapply(popup_content, htmltools::HTML)  # Pop-up al hacer clic
+  ) %>%
+  
+  # Leyenda
+  addLegend(
+    pal = pal, 
+    values = ~DENSIDAD, 
+    opacity = 0.7, 
+    title = htmltools::HTML("Densidad<br>(Hab/Km²)"),
+    position = "bottomright",
+    labFormat = labelFormat(transform = function(x) sort(x, decreasing = TRUE)) # Formato de la leyenda
+  ) %>%
+  
+  # Título (se agrega como HTML, no es nativo de leaflet)
+  addControl(html = "<strong>Análisis Geoestadístico: Densidad de Población por Radio Censal (Córdoba)</strong>", 
+             position = "topleft")
+
+# Mostrar el mapa (si estás en RStudio, se abrirá en el Viewer)
+mapa_leaflet
+
+
+```
+
+
+# mapa por radio
+
+```{r}
+
+
+ggplot(sf_final_mapa_listo) +
+  geom_sf(aes(fill = DENSIDAD), color = NA) +
+  scale_fill_viridis_c(option = "magma") +
+  labs(title = "Densidad de Población en Córdoba Capital", fill = "Densidad (Hab/Km²)") +
+  theme_minimal()
+
+```
+
