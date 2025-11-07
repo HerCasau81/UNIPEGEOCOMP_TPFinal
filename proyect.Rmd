@@ -687,3 +687,158 @@ ggplot(sf_final_mapa_listo) +
 
 ```
 
+# Descarga radios_2022
+
+```{r}
+# --- CARGA DEL CSV DE ATRIBUTOS (Parte I) ---
+# Asegúrate de que esta línea apunte al CSV que contiene las variables estadísticas
+personas <- read_csv("Indicadores de personas. Radios, 2022 - Córdoba.csv") 
+
+```
+
+
+```{r}
+# ============================================================
+# ANÁLISIS GEOESTADÍSTICO - CENSO 2022 (Córdoba Capital)
+# ============================================================
+
+library(tidyverse)
+library(sf)
+library(viridis)
+library(leaflet)
+library(htmltools)
+
+# ------------------------------------------------------------
+# 1 CARGA Y LIMPIEZA DE DATOS ESTADÍSTICOS (personas)
+# ------------------------------------------------------------
+
+personas <- read_csv("Indicadores de personas. Radios, 2022 - Córdoba.csv")
+
+df_atributos_limpio <- personas %>%
+  rename(
+    COD_RAD_CENSAL_RAW = `Código de radio.`
+  ) %>%
+  select(
+    COD_RAD_CENSAL_RAW,
+    POB_TOTAL = `Población total (en hogares familiares).`,
+    POB_JVEN  = `Población de 18 a 29 años.`,
+    POB_TOTAL_GENERAL = `Población total`
+  ) %>%
+  mutate(
+    # Crear clave completa de 9 dígitos
+    COD_RAD_CENSAL = str_pad(as.character(COD_RAD_CENSAL_RAW), width = 9, side = "left", pad = "0"),
+    COD_PROV = str_sub(COD_RAD_CENSAL, 1, 2),
+    COD_DPTO = str_sub(COD_RAD_CENSAL, 3, 5)
+  ) %>%
+  # Filtramos Córdoba Capital (14014)
+  filter(COD_PROV == "14" & COD_DPTO == "014")
+
+# ------------------------------------------------------------
+# 2 CÁLCULO DE INDICADORES
+# ------------------------------------------------------------
+
+df_indicadores_listo <- df_atributos_limpio %>%
+  mutate_at(vars(starts_with("POB_")), as.numeric) %>%
+  mutate(
+    RATIO_POB_JOVEN = POB_JVEN / POB_TOTAL
+  ) %>%
+  mutate_if(is.numeric, ~replace(., is.na(.) | is.infinite(.), 0))
+
+# ------------------------------------------------------------
+# 3 GEOMETRÍA (SHAPEFILE DE RADIOS)
+# ------------------------------------------------------------
+
+sf_cordoba_radios <- st_read("radios_2022/radios2022_v1.0.shp")
+
+sf_cordoba_capital_geo <- sf_cordoba_radios %>%
+  mutate(
+    COD_PROV = str_pad(as.character(PROV), width = 2, side = "left", pad = "0"),
+    COD_DPTO = str_pad(as.character(DEPTO), width = 3, side = "left", pad = "0"),
+    FRACCION = str_pad(as.character(FRAC), width = 2, side = "left", pad = "0"),
+    RADIO = str_pad(as.character(RADIO), width = 2, side = "left", pad = "0"),
+    COD_RAD_CENSAL = paste0(COD_PROV, COD_DPTO, FRACCION, RADIO)
+  ) %>%
+  filter(COD_PROV == "14" & COD_DPTO == "014")
+
+# ------------------------------------------------------------
+# 4 UNIÓN GEOESTADÍSTICA
+# ------------------------------------------------------------
+
+sf_final_geoestadistico <- sf_cordoba_capital_geo %>%
+  left_join(df_indicadores_listo, by = "COD_RAD_CENSAL") %>%
+  filter(!is.na(POB_TOTAL) & POB_TOTAL > 0)
+
+# ------------------------------------------------------------
+# 5 DENSIDAD POBLACIONAL
+# ------------------------------------------------------------
+
+sf_final_mapa_listo <- sf_final_geoestadistico %>%
+  mutate(
+    AREA_KM2 = as.numeric(st_area(geometry)) / 1e6,
+    DENSIDAD = POB_TOTAL / AREA_KM2
+  )
+
+
+
+
+```
+
+
+```{r}
+
+# ============================================================
+# MAPA ESTÁTICO (ggplot2)
+# ============================================================
+
+ggplot(sf_final_mapa_listo) +
+  geom_sf(aes(fill = DENSIDAD), color = NA) +
+  scale_fill_viridis_c(option = "magma", trans = "log10", labels = scales::comma) +
+  labs(
+    title = "Densidad de Población por Radio Censal",
+    subtitle = "Departamento Capital (Córdoba)",
+    fill = "Habitantes / km²"
+  ) +
+  theme_minimal()
+
+```
+
+```{r}
+# ============================================================
+# MAPA INTERACTIVO (leaflet)
+# ============================================================
+
+#bins <- 10^c(0, 1, 2, 3, 4, 5)
+#pal <- colorBin("magma", domain = sf_final_mapa_listo$DENSIDAD, bins = bins)
+
+bins <- quantile(sf_final_mapa_listo$DENSIDAD, probs = seq(0, 1, length.out = 8), na.rm = TRUE)
+pal <- colorBin("magma", domain = sf_final_mapa_listo$DENSIDAD, bins = bins)
+
+
+sf_final_mapa_listo <- sf_final_mapa_listo %>%
+  mutate(
+    popup_content = paste0(
+      "<strong>Radio Censal: </strong>", COD_RAD_CENSAL,
+      "<br><strong>Población Total: </strong>", scales::comma(POB_TOTAL, accuracy = 1),
+      "<br><strong>Densidad (Hab/km²): </strong>", scales::comma(DENSIDAD, accuracy = 0.1),
+      "<br><strong>Ratio Joven (18-29): </strong>", scales::percent(RATIO_POB_JOVEN, accuracy = 0.1)
+    )
+  )
+
+mapa_leaflet <- leaflet(sf_final_mapa_listo) %>%
+  addProviderTiles(providers$CartoDB.Positron) %>%
+  addPolygons(
+    fillColor = ~pal(DENSIDAD),
+    weight = 0.5, color = "white",
+    fillOpacity = 0.8,
+    highlightOptions = highlightOptions(weight = 2, color = "#666", fillOpacity = 0.9, bringToFront = TRUE),
+    popup = ~lapply(popup_content, htmltools::HTML)
+  ) %>%
+  addLegend(pal = pal, values = ~DENSIDAD, title = "Habitantes / km²", opacity = 0.7) %>%
+  addControl(html = "<b>Densidad de Población por Radio Censal<br>Córdoba Capital (Censo 2022)</b>",
+             position = "topleft")
+
+mapa_leaflet
+
+
+```
+
