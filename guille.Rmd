@@ -1,0 +1,112 @@
+---
+title: "tp2"
+author: "Guillermo Ascolani"
+date: "2025-11-12"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r paquetes}
+library(sf)
+library(ggplot2)
+library(dplyr)
+```
+
+```{r }
+# Built-in dataset
+shp_cordoba <- st_read("shp_cordoba_areas/shp_cordoba_areas.shp",options = "ENCODING=UTF-8")
+
+shp_cordoba$categoria <- gsub("�reas verdes", "Áreas verdes", shp_cordoba$categoria)
+
+areas_verdes <- shp_cordoba |>
+  filter(categoria == "Áreas verdes")
+
+ggplot() +
+  geom_sf(data = shp_cordoba, fill = "lightblue", color = "black") +
+  geom_sf(data = areas_verdes, fill = "lightgreen", color = "black") +
+  theme_void()
+
+```
+
+
+```{r }
+proyect <- read.csv(
+  "data/0alq_zp_2024_completo.csv",
+  sep = "|",
+  header = TRUE,
+  fill = TRUE,
+  quote = "\""
+)
+# proyect_codoba
+# Filtrar solo coordenadas válidas dentro de Argentina
+valid <- proyect %>%
+  filter(!is.na(lat) & !is.na(lng))
+# Filtrar solo los que caen en Córdoba
+cordoba <- valid %>%
+  filter(lat >= -33.2 & lat <= -30,
+         lng >= -65.4 & lng <= -63)
+# Ver cuántos registros son de Córdoba
+nrow(cordoba)
+########################
+# Sobrescribir proyect solo con Córdoba
+proyect_cordo <- cordoba
+
+proyect_cordo_sf <- st_as_sf(
+  proyect_cordo, 
+  coords = c("lng", "lat"),  # longitude first, latitude second
+  crs = 4326                 # EPSG:4326 (WGS 84)
+)
+```
+
+```{r }
+# Transform areas_verdes to match proyect_cordo CRS if needed
+if (st_crs(proyect_cordo_sf) != st_crs(areas_verdes)) {
+  proyect_cordo_sf <- st_transform(proyect_cordo_sf, st_crs(areas_verdes))
+}
+
+dist_matrix <- st_distance(proyect_cordo_sf, areas_verdes)  # returns a matrix
+
+# Get the minimum distance for each point
+proyect_cordo_sf$min_dist_to_areas <- apply(dist_matrix, 1, min)
+
+```
+
+```{r }
+ref_point <- st_sfc(st_point(c(-64.182121, -31.411434)), crs = 4326)
+
+# Or as an sf data frame
+ref_point_sf <- st_sf(id = 1, geometry = ref_point)
+
+if (st_crs(proyect_cordo_sf) != st_crs(ref_point_sf)) {
+  ref_point_sf <- st_transform(ref_point_sf, st_crs(proyect_cordo_sf))
+}
+
+proyect_cordo_sf$dist_to_ref <- st_distance(proyect_cordo_sf, ref_point_sf)
+```
+
+
+```{r }
+  mod1 <- lm(alq_dolar ~ min_dist_to_areas + dist_to_ref,
+               data = proyect_cordo_sf)
+
+  summary(mod1)
+```
+
+```{r }
+  mod2 <- lm(log(alq_dolar) ~ min_dist_to_areas + dist_to_ref,
+               data = proyect_cordo_sf)
+
+  summary(mod2)
+```
+
+
+```{r }
+  mod2 <- lm(log(alq_dolar) ~ min_dist_to_areas + dist_to_ref + sup_tot,
+               data = proyect_cordo_sf)
+
+  summary(mod2)
+```
