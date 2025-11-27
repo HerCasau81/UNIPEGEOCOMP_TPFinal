@@ -28,17 +28,19 @@ library(ggspatial)
 
 ```
 
-
 ```{r carga_datos}
 
+temp <- tempdir()
+unzip("data/0alq_zp_2024_completo.zip", exdir = temp)
+
 #Leer dataset de alquileres
-proyect <- read.csv(
-  "data/0alq_zp_2024_completo.csv",
+proyect <- read.csv(fs::path(temp, "0alq_zp_2024_completo", ext = "csv"),
   sep = "|",
   header = TRUE,
   fill = TRUE,
   quote = "\""
 )
+
 # proyect_codoba
 # Filtrar solo coordenadas válidas
 valid <- proyect %>%
@@ -54,15 +56,11 @@ cordoba <- valid %>%
   filter(lat >= lat_min & lat <= lat_max,
          lng >= lng_min & lng <= lng_max)
 
-
 proyect_cordo_sf <- st_as_sf(
   cordoba, 
   coords = c("lng", "lat"),  # longitude first, latitude second
   crs = 4326                 # EPSG:4326 (WGS 84)
 )
-
-
-
 
 # crear coord polygon (closed ring)
 coords <- matrix(
@@ -81,10 +79,10 @@ bbox_poly <- st_polygon(list(coords)) |>
   st_sf()
 
 # cargar fracciones censales y generar area de analisis
-fracciones_cba <- st_read("fracciones_censales/cba/fracciones_cba.shp")
+fracciones_cba <- st_read("data/fracciones_censales/cba/fracciones_cba.shp")
 area_analisis_cba <- fracciones_cba |> st_intersection(st_buffer(bbox_poly, 2000))
 
-#filtrar los alquileres por el area de analisis
+# filtrar los alquileres por el area de analisis
 proyect_cordo_sf <- proyect_cordo_sf |> st_intersection(area_analisis_cba$geometry)
 
 #ploteo el area de estudio y los alquileres
@@ -95,9 +93,9 @@ ggplot() +
   geom_sf(data = area_analisis_cba, fill = NA, color = "red", size = 0.5, alpha=0.12) +
   coord_sf() +
   theme_minimal()
-
-
 ```
+
+
 ```{r mapa_promedios}
 
 shp_fracciones_cordoba_posgar <- shp_fracciones_cordoba|> st_transform(st_crs(proyect_cordo_sf))
