@@ -1,9 +1,9 @@
 #Todo lo referido al callejero y distancias esta en este script.
 
 #si el archivo existe lo cargo directamente, sino descargo los datos
-if (file.exists("callejero.gpkg")) {
+if (file.exists("data/callejero.gpkg")) {
   # Load the geopackage
-  callejero <- st_read("callejero.gpkg")
+  callejero <- st_read("data/callejero.gpkg")
 } else {
   
   clases_principales <- c(
@@ -40,10 +40,10 @@ print("Carga de datos lista, continuando...")
 
 #callejero <- st_simplify(callejero, dTolerance = 2, preserveTopology = TRUE)
 
-if (file.exists("net_m.rds")) {
+if (file.exists("data/net_m.rds")) {
   # Load the geopackage
   print("Usando archivo net_m.rds")
-  net_m <- readRDS("net_m.rds")
+  net_m <- readRDS("data/net_m.rds")
 } else {
 
 # ---- 3) RED Y LIMPIEZA -----------------------------------------------------
@@ -144,7 +144,11 @@ edges_sf <- st_as_sf(net_m, "edges")
 nodes_sf  <- st_as_sf(net_m, "nodes")
 
 #cargo shp de areas de cordoba y filtro por areas verdes
-shp_cordoba <- st_read("shp_cordoba_areas/shp_cordoba_areas.shp",options = "ENCODING=UTF-8")
+temp <- tempdir()
+unzip("data/shp_cordoba_areas.zip", exdir = temp)
+shp_cordoba <- st_read(fs::path(temp, 
+                                "/shp_cordoba_areas/shp_cordoba_areas.shp"),
+                       options = "ENCODING=UTF-8")
 
 shp_cordoba$categoria <- gsub("�reas verdes", "Áreas verdes", shp_cordoba$categoria)
 

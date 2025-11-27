@@ -90,21 +90,23 @@ ggplot() +
   ggtitle("Area de estudio y alquileres disponibles") +
   annotation_map_tile(type = "osm", zoom = 12) +   # <-- basemap
   geom_sf(data = proyect_cordo_sf, color = "green", size = 0.7)+
-  geom_sf(data = area_analisis_cba, fill = NA, color = "red", size = 0.5, alpha=0.12) +
+  geom_sf(data = area_analisis_cba |> 
+            summarise(), fill = NA, color = "red", size = 0.5, alpha=0.12) +
   coord_sf() +
   theme_minimal()
 ```
 
+Mejorar visualización de la variable de interés: precio por m2 promedio por fracción censal
 
 ```{r mapa_promedios}
 
-shp_fracciones_cordoba_posgar <- shp_fracciones_cordoba|> st_transform(st_crs(proyect_cordo_sf))
+shp_fracciones_cordoba_posgar <- area_analisis_cba |>
+  st_transform(st_crs(proyect_cordo_sf))
 
 prueba1 <- proyect_cordo_sf |> st_intersection(shp_fracciones_cordoba_posgar["fid"])
 
-prueba1 <- prueba1 |> filter(!is.na(sup_tot) & !is.na(alq_dolar) &
-                             sup_tot > 10
-                             )
+prueba1 <- prueba1 |>
+  filter(!is.na(sup_tot) & !is.na(alq_dolar) & sup_tot > 10)
 
   ALQUILERES_FRAC <- prueba1 |>
     st_drop_geometry() |>
@@ -140,30 +142,36 @@ prueba1 <- prueba1 |> filter(!is.na(sup_tot) & !is.na(alq_dolar) &
 
 ```{r ejecutar_script_redes_espaciales}
 
-source("./callejero_y_redes_espaciales.R")
+source("scripts/callejero_y_redes_espaciales.R")
 
 ```
 
 
 ```{r }
-db_aux <- proyect_cordo_sf |> filter(!is.na(alq_dolar), !is.na(sup_tot) & !is.na(antig) & !is.na(amb) & !is.na(bano) & !is.na(geometry))
+db_aux <- proyect_cordo_sf |> 
+  filter(!is.na(alq_dolar), !is.na(sup_tot) & !is.na(antig) & 
+           !is.na(amb) & !is.na(bano) & !is.na(geometry))
 
-columns_to_keep <- c('alq_dolar','sup_tot', 'antig', 'amb','bano','geometry')
+columns_to_keep <- c('alq_dolar','sup_tot', 'antig',
+                     'amb','bano', 'min_dist_to_areas', 'geometry')
 
 # Select only those columns
 db_aux <- db_aux[, columns_to_keep]
 
-form1 <- as.formula("alq_dolar ~ sup_tot + antig + amb + bano")
-  mod_lm1 <- lm(form1, data = db_aux)
+form1 <- as.formula("alq_dolar ~ sup_tot + antig + amb + bano + min_dist_to_areas")
+mod_lm1 <- lm(form1, data = db_aux)
 
-  summary(mod_lm1)
+summary(mod_lm1)
 ```
+
 
 
 ```{r }
 
-fracciones_cba <- st_read("fracciones_censales/cba/fracciones_cba.shp")
-fracciones_cba <- fracciones_cba |> st_intersection(st_transform(st_buffer(bbox_poly, 2000), st_crs(fracciones_cba) ))
+fracciones_cba <- st_read("data/fracciones_censales/cba/fracciones_cba.shp")
+fracciones_cba <- fracciones_cba |>
+  st_intersection(st_transform(st_buffer(bbox_poly, 2000),
+                               st_crs(fracciones_cba) ))
 
   form_gwr <- form1
 
@@ -177,10 +185,10 @@ fracciones_cba <- fracciones_cba |> st_intersection(st_transform(st_buffer(bbox_
 
 ### Definición del modelo GWR ----------------
 
-  mod_gwr <-  gwr(form_gwr, data = db_aux,
-                  coords = st_coordinates(db_aux),
-                  adapt = bwG, gweight = gwr.Gauss,
-                  hatmatrix = TRUE, se.fit = TRUE)
+  mod_gwr <- gwr(form_gwr, data = db_aux,
+                 coords = st_coordinates(db_aux),
+                 adapt = bwG, gweight = gwr.Gauss,
+                 hatmatrix = TRUE, se.fit = TRUE)
 
   mod_gwr
   summary(mod_gwr)
@@ -231,18 +239,14 @@ db_aux$price_m2 <- db_aux$alq_dolar/db_aux$sup_tot
 ```
 
 ```{r }
-form2 <- as.formula("price_m2 ~ sup_tot + antig + amb + bano")
+form2 <- as.formula("price_m2 ~ sup_tot + antig + min_dist_to_areas")
+# bano + amb + 
   mod_lm2 <- lm(form2, data = db_aux)
 
   summary(mod_lm2)
 ```
 
 ```{r }
-
-
-
-
-
 
   form_gwr <- form2
 
@@ -301,18 +305,28 @@ form2 <- as.formula("price_m2 ~ sup_tot + antig + amb + bano")
   ggarrange(plotlist = list_p)
 ```
 
+Sumar variables sociodemográficas de nivel estudio
+Sumar la tipología de viviendas
+Sumar si está o no en country
 
 ```{r }
-radios_cba <- st_read("Indicadores de hogares. Radios, 2022 - Córdoba/Indicadores de hogares. Radios, 2022 - Córdoba.shp")
-radios_cba <- radios_cba |> st_intersection(st_transform(st_buffer(bbox_poly, 2000), st_crs(radios_cba) ))
 
-radios_cba <- radios_cba |> st_transform(st_crs(db_aux))
+radios_cba <- st_read("data/Indicadores de hogares. Radios, 2022 - Córdoba/Indicadores de hogares. Radios, 2022 - Córdoba.shp")
 
-db_aux <- st_join(db_aux, radios_cba[c("H_TOTAL", "H_NBI", "H_HACINAMI")])
+radios_cba <- radios_cba |>
+  st_intersection(st_transform(st_buffer(bbox_poly, 2000),
+                               st_crs(radios_cba) ))
+
+radios_cba <- radios_cba |> 
+  st_transform(st_crs(db_aux)) |> 
+  mutate(H_NBI = H_NBI / H_TOTAL * 100,
+         H_HACINAMI = H_HACINAMI / H_TOTAL * 100)
+
+db_aux <- st_join(db_aux, radios_cba[c("H_NBI", "H_HACINAMI")])
 
 db_aux <- db_aux |> filter(sup_tot >= 20 & sup_tot <= 1000)
 
-form3 <- as.formula("price_m2 ~ sup_tot + antig + amb + bano + H_TOTAL + H_NBI + H_HACINAMI")
+form3 <- as.formula("price_m2 ~ sup_tot + antig + H_NBI + H_HACINAMI + min_dist_to_areas")
   mod_lm3 <- lm(form3, data = db_aux)
 
   summary(mod_lm3)
@@ -368,7 +382,7 @@ form3 <- as.formula("price_m2 ~ sup_tot + antig + amb + bano + H_TOTAL + H_NBI +
 
   gg_mapeo_AMBA("localR2",  viridis_op = "D")
 
-  list_p <- map(c('sup_tot', 'antig', 'amb','bano', 'H_TOTAL' , 'H_NBI' , 'H_HACINAMI'),
+  list_p <- map(c('sup_tot', 'antig',  'H_NBI' , 'H_HACINAMI'),
                 ~gg_mapeo_AMBA(var = .x, viridis_op = "A") )
 
   ggarrange(plotlist = list_p)
