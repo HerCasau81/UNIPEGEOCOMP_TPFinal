@@ -1,0 +1,379 @@
+---
+title: "Guille_prolijo"
+author: "Guillermo Ascolani"
+date: "2025-11-27"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r paquetes}
+library(sf)
+library(ggplot2)
+library(dplyr)
+library(spgwr)
+library(GWmodel)
+library(purrr)
+library(ggpubr)
+
+#para callejero
+library(leaflet)
+library(osmdata)
+library(sfnetworks)
+library(tidygraph)
+library(ggspatial)
+
+```
+
+
+```{r carga_datos}
+
+#Leer dataset de alquileres
+proyect <- read.csv(
+  "data/0alq_zp_2024_completo.csv",
+  sep = "|",
+  header = TRUE,
+  fill = TRUE,
+  quote = "\""
+)
+# proyect_codoba
+# Filtrar solo coordenadas válidas
+valid <- proyect %>%
+  filter(!is.na(lat) & !is.na(lng))
+
+# defino bounding box
+lat_min <- -31.54029
+lat_max <- -31.29245 
+lng_min <- -64.32789
+lng_max <- -64.03748
+
+cordoba <- valid %>%
+  filter(lat >= lat_min & lat <= lat_max,
+         lng >= lng_min & lng <= lng_max)
+
+
+proyect_cordo_sf <- st_as_sf(
+  cordoba, 
+  coords = c("lng", "lat"),  # longitude first, latitude second
+  crs = 4326                 # EPSG:4326 (WGS 84)
+)
+
+
+
+
+# crear coord polygon (closed ring)
+coords <- matrix(
+  c(lng_min, lat_min,
+    lng_min, lat_max,
+    lng_max, lat_max,
+    lng_max, lat_min,
+    lng_min, lat_min),
+  ncol = 2,
+  byrow = TRUE
+)
+
+# crear sf polygon
+bbox_poly <- st_polygon(list(coords)) |> 
+  st_sfc(crs = 4326) |> 
+  st_sf()
+
+# cargar fracciones censales y generar area de analisis
+fracciones_cba <- st_read("fracciones_censales/cba/fracciones_cba.shp")
+area_analisis_cba <- fracciones_cba |> st_intersection(st_buffer(bbox_poly, 2000))
+
+#filtrar los alquileres por el area de analisis
+proyect_cordo_sf <- proyect_cordo_sf |> st_intersection(area_analisis_cba$geometry)
+
+#ploteo el area de estudio y los alquileres
+ggplot() +
+  ggtitle("Area de estudio y alquileres disponibles") +
+  annotation_map_tile(type = "osm", zoom = 12) +   # <-- basemap
+  geom_sf(data = proyect_cordo_sf, color = "green", size = 0.7)+
+  geom_sf(data = area_analisis_cba, fill = NA, color = "red", size = 0.5, alpha=0.12) +
+  coord_sf() +
+  theme_minimal()
+
+
+```
+```{r mapa_promedios}
+
+shp_fracciones_cordoba_posgar <- shp_fracciones_cordoba|> st_transform(st_crs(proyect_cordo_sf))
+
+prueba1 <- proyect_cordo_sf |> st_intersection(shp_fracciones_cordoba_posgar["fid"])
+
+prueba1 <- prueba1 |> filter(!is.na(sup_tot) & !is.na(alq_dolar) &
+                             sup_tot > 10
+                             )
+
+  ALQUILERES_FRAC <- prueba1 |>
+    st_drop_geometry() |>
+    group_by(fid) |>
+    summarise(price_m2 = mean(alq_dolar/sup_tot),
+              surface_m2 = mean(sup_tot))
+  
+  db <- left_join(shp_fracciones_cordoba_posgar, ALQUILERES_FRAC, by = "fid") |>
+    filter(!is.na(price_m2)) |>
+    ungroup()
+
+  #rm(ALQUILERES_FRAC)
+#   
+#   nb <- poly2nb(db, row.names = db$fid, queen = TRUE)
+#   lwb <- nb2listw(nb, style = 'W', zero.policy = T)
+#   
+# ### Exploración de la variable dependiente --------------------------
+# 
+#   moran(db$price_m2, listw = lwb, n = length(nb),
+#         zero.policy = TRUE, S0 = Szero(lwb)) |>
+#     pluck("I")
+# 
+#   lm(price_m2 ~ 1, data = db) |>
+#     lm.morantest(listw = lwb)
+
+  ggplot(db) +
+    annotation_map_tile(type = "osm", zoom = 12) +   # <-- basemap
+    geom_sf(aes(fill = price_m2), color = NA, alpha = 0.7) +
+    #geom_sf(data = DEPTOS, fill = NA, color = "grey50")+
+    scale_fill_viridis_c("Precio del m2", option = "C") +
+    theme_void()
+```
+
+```{r ejecutar_script_redes_espaciales}
+
+source("./callejero_y_redes_espaciales.R")
+
+```
+
+
+```{r }
+db_aux <- proyect_cordo_sf |> filter(!is.na(alq_dolar), !is.na(sup_tot) & !is.na(antig) & !is.na(amb) & !is.na(bano) & !is.na(geometry))
+
+columns_to_keep <- c('alq_dolar','sup_tot', 'antig', 'amb','bano','geometry')
+
+# Select only those columns
+db_aux <- db_aux[, columns_to_keep]
+
+form1 <- as.formula("alq_dolar ~ sup_tot + antig + amb + bano")
+  mod_lm1 <- lm(form1, data = db_aux)
+
+  summary(mod_lm1)
+```
+
+
+```{r }
+
+fracciones_cba <- st_read("fracciones_censales/cba/fracciones_cba.shp")
+fracciones_cba <- fracciones_cba |> st_intersection(st_transform(st_buffer(bbox_poly, 2000), st_crs(fracciones_cba) ))
+
+  form_gwr <- form1
+
+  bwG <- gwr.sel(form_gwr,
+                 data = st_drop_geometry(db_aux),
+                 coords = st_coordinates(db_aux, longlat = FALSE),
+                 adapt = TRUE,
+                 gweight = gwr.Gauss,
+                 verbose = TRUE, show.error.messages = TRUE)
+  bwG
+
+### Definición del modelo GWR ----------------
+
+  mod_gwr <-  gwr(form_gwr, data = db_aux,
+                  coords = st_coordinates(db_aux),
+                  adapt = bwG, gweight = gwr.Gauss,
+                  hatmatrix = TRUE, se.fit = TRUE)
+
+  mod_gwr
+  summary(mod_gwr)
+
+### Exploración de resultados -----------------
+
+  class(mod_gwr$SDF)
+
+  GWR_datos <- mod_gwr$SDF |>
+    st_as_sf(sp) |>
+    st_set_crs(st_crs(db_aux))
+
+  GWR_datos
+
+  #cat("R cuadrado del modelo lineal (global):", summary(mod_lm2)$r.squared, "\n\n")
+
+  #cat("Resumen de R cuadrado local:\n")
+  #summary(GWR_datos$localR2)
+
+  # Creamos una función para simplificar el código
+  gg_mapeo_AMBA <- function(var, db = GWR_datos, viridis_op = "A"){
+    db$v <- db[[var]]
+
+    db |>
+      ggplot() +
+      geom_sf(aes(color = v)) +
+      #geom_sf(data = DEPTOS, color = "grey60", fill = NA) +
+      #geom_sf(data = PROV, color = "grey30", fill = NA) +
+      geom_sf(data = fracciones_cba, fill = NA, color = "gray", alpha = 0.1) +
+      scale_color_viridis_c(var, option = viridis_op) +
+      theme_void()
+  }
+
+  gg_mapeo_AMBA("localR2",  viridis_op = "D")
+
+  list_p <- map(c('sup_tot', 'antig', 'amb','bano'),
+                ~gg_mapeo_AMBA(var = .x, viridis_op = "A") )
+
+  ggarrange(plotlist = list_p)
+```
+
+
+```{r }
+db_aux <- db_aux %>%
+  filter(alq_dolar >= 100 & alq_dolar <= 1500)
+
+db_aux$price_m2 <- db_aux$alq_dolar/db_aux$sup_tot
+```
+
+```{r }
+form2 <- as.formula("price_m2 ~ sup_tot + antig + amb + bano")
+  mod_lm2 <- lm(form2, data = db_aux)
+
+  summary(mod_lm2)
+```
+
+```{r }
+
+
+
+
+
+
+  form_gwr <- form2
+
+  bwG <- gwr.sel(form_gwr,
+                 data = st_drop_geometry(db_aux),
+                 coords = st_coordinates(db_aux, longlat = FALSE),
+                 adapt = TRUE,
+                 gweight = gwr.Gauss,
+                 verbose = TRUE, show.error.messages = TRUE)
+  bwG
+
+### Definición del modelo GWR ----------------
+
+  mod_gwr <-  gwr(form_gwr, data = db_aux,
+                  coords = st_coordinates(db_aux),
+                  adapt = bwG, gweight = gwr.Gauss,
+                  hatmatrix = TRUE, se.fit = TRUE)
+
+  mod_gwr
+  summary(mod_gwr)
+
+### Exploración de resultados -----------------
+
+  class(mod_gwr$SDF)
+
+  GWR_datos <- mod_gwr$SDF |>
+    st_as_sf(sp) |>
+    st_set_crs(st_crs(db_aux))
+
+  GWR_datos
+
+  #cat("R cuadrado del modelo lineal (global):", summary(mod_lm2)$r.squared, "\n\n")
+
+  #cat("Resumen de R cuadrado local:\n")
+  #summary(GWR_datos$localR2)
+
+  # Creamos una función para simplificar el código
+  gg_mapeo_AMBA <- function(var, db = GWR_datos, viridis_op = "A"){
+    db$v <- db[[var]]
+
+    db |>
+      ggplot() +
+      geom_sf(aes(color = v)) +
+      #geom_sf(data = DEPTOS, color = "grey60", fill = NA) +
+      #geom_sf(data = PROV, color = "grey30", fill = NA) +
+      geom_sf(data = fracciones_cba, fill = NA, color = "gray", alpha = 0.1) +
+      scale_color_viridis_c(var, option = viridis_op) +
+      theme_void()
+  }
+
+  gg_mapeo_AMBA("localR2",  viridis_op = "D")
+
+  list_p <- map(c('sup_tot', 'antig', 'amb','bano'),
+                ~gg_mapeo_AMBA(var = .x, viridis_op = "A") )
+
+  ggarrange(plotlist = list_p)
+```
+
+
+```{r }
+radios_cba <- st_read("Indicadores de hogares. Radios, 2022 - Córdoba/Indicadores de hogares. Radios, 2022 - Córdoba.shp")
+radios_cba <- radios_cba |> st_intersection(st_transform(st_buffer(bbox_poly, 2000), st_crs(radios_cba) ))
+
+radios_cba <- radios_cba |> st_transform(st_crs(db_aux))
+
+db_aux <- st_join(db_aux, radios_cba[c("H_TOTAL", "H_NBI", "H_HACINAMI")])
+
+db_aux <- db_aux |> filter(sup_tot >= 20 & sup_tot <= 1000)
+
+form3 <- as.formula("price_m2 ~ sup_tot + antig + amb + bano + H_TOTAL + H_NBI + H_HACINAMI")
+  mod_lm3 <- lm(form3, data = db_aux)
+
+  summary(mod_lm3)
+
+  form_gwr <- form3
+
+  bwG <- gwr.sel(form_gwr,
+                 data = st_drop_geometry(db_aux),
+                 coords = st_coordinates(db_aux, longlat = FALSE),
+                 adapt = TRUE,
+                 gweight = gwr.Gauss,
+                 verbose = TRUE, show.error.messages = TRUE)
+  bwG
+
+### Definición del modelo GWR ----------------
+
+  mod_gwr <-  gwr(form_gwr, data = db_aux,
+                  coords = st_coordinates(db_aux),
+                  adapt = bwG, gweight = gwr.Gauss,
+                  hatmatrix = TRUE, se.fit = TRUE)
+
+  mod_gwr
+  summary(mod_gwr)
+
+### Exploración de resultados -----------------
+
+  class(mod_gwr$SDF)
+
+  GWR_datos <- mod_gwr$SDF |>
+    st_as_sf(sp) |>
+    st_set_crs(st_crs(db_aux))
+
+  GWR_datos
+
+  #cat("R cuadrado del modelo lineal (global):", summary(mod_lm2)$r.squared, "\n\n")
+
+  #cat("Resumen de R cuadrado local:\n")
+  #summary(GWR_datos$localR2)
+
+  # Creamos una función para simplificar el código
+  gg_mapeo_AMBA <- function(var, db = GWR_datos, viridis_op = "A"){
+    db$v <- db[[var]]
+
+    db |>
+      ggplot() +
+      geom_sf(aes(color = v)) +
+      #geom_sf(data = DEPTOS, color = "grey60", fill = NA) +
+      #geom_sf(data = PROV, color = "grey30", fill = NA) +
+      geom_sf(data = fracciones_cba, fill = NA, color = "gray", alpha = 0.1) +
+      scale_color_viridis_c(var, option = viridis_op) +
+      theme_void()
+  }
+
+  gg_mapeo_AMBA("localR2",  viridis_op = "D")
+
+  list_p <- map(c('sup_tot', 'antig', 'amb','bano', 'H_TOTAL' , 'H_NBI' , 'H_HACINAMI'),
+                ~gg_mapeo_AMBA(var = .x, viridis_op = "A") )
+
+  ggarrange(plotlist = list_p)
+```
+
+

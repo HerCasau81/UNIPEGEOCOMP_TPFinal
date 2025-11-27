@@ -1,0 +1,1 @@
+https://geonode.indec.gob.ar/geoserver/ows?service=WFS&version=2.0.0&request=GetFeature&typename=geonode:fracciones_censales&outputFormat=shape-zip&srsName=EPSG:4326
